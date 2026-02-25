@@ -6,25 +6,30 @@
 
 /* Ağ kütüphaneleri */
 #include <sys/socket.h>
-#include <arpa/inet.h>       // ntohs(), inet_ntoa() için
-#include <net/ethernet.h>    // ETH_P_ALL
-#include <linux/if_packet.h> // sockaddr_ll
-#include <linux/if_ether.h>  // struct ethhdr (Ethernet Başlığı)
-#include <linux/ip.h>        // struct iphdr (IP Başlığı)
+#include <arpa/inet.h>       
+#include <net/ethernet.h>    
+#include <linux/if_packet.h> 
+#include <linux/if_ether.h>  
+#include <linux/ip.h>        
+#include <linux/tcp.h>       // YENİ: struct tcphdr (TCP Başlığı)
+#include <linux/udp.h>       // YENİ: struct udphdr (UDP Başlığı)
 
 #define BUFFER_SIZE 65536
 
-/* ANSI Renk Kodları (Profesyonel Terminal Çıktısı İçin) */
+/* ANSI Renk Kodları */
 #define COLOR_RESET  "\x1b[0m"
 #define COLOR_GREEN  "\x1b[32m"
 #define COLOR_BLUE   "\x1b[34m"
 #define COLOR_YELLOW "\x1b[33m"
 #define COLOR_CYAN   "\x1b[36m"
+#define COLOR_MAGENTA "\x1b[35m"
 
 /* --- FONKSİYON PROTOTİPLERİ --- */
 void ProcessPacket(unsigned char *buffer, ssize_t size);
 void PrintEthernetHeader(unsigned char *buffer);
 void PrintIpHeader(unsigned char *buffer);
+void PrintTcpPacket(unsigned char *buffer, int iphdr_len); // YENİ
+void PrintUdpPacket(unsigned char *buffer, int iphdr_len); // YENİ
 
 int main() {
     int raw_sock;
@@ -44,7 +49,7 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    printf("[INFO] Ether-Scope Aktif. L2 ve L3 Paketleri Dinleniyor...\n");
+    printf("[INFO] Ether-Scope Aktif. L2, L3 ve L4 Paketleri Dinleniyor...\n");
     printf("====================================================\n");
 
     while (1) {
@@ -69,22 +74,19 @@ int main() {
 void ProcessPacket(unsigned char *buffer, ssize_t size) {
     struct ethhdr *eth = (struct ethhdr *)buffer;
     
-    PrintEthernetHeader(buffer);
-    
-    // YENİ: Eğer protokol IPv4 ise (Hex: 0x0800), IP başlığını ayrıştır!
-    // ntohs() kullanımı kritik: Ağdan gelen Big-Endian veriyi kendi sistemimize (Little-Endian) çevirir.
+    // Yalnızca IPv4 paketlerini tam analiz ediyoruz
     if (ntohs(eth->h_proto) == 0x0800) {
+        PrintEthernetHeader(buffer);
         PrintIpHeader(buffer);
+        printf("   |-Paket Boyutu: %ld byte\n", size);
+        printf("----------------------------------------------------\n");
     }
-    
-    printf("   |-Paket Boyutu: %ld byte\n", size);
-    printf("----------------------------------------------------\n");
 }
 
 void PrintEthernetHeader(unsigned char *buffer) {
     struct ethhdr *eth = (struct ethhdr *)buffer;
 
-    printf("\n[*] ETHERNET CERCEVESI YAKALANDI\n");
+    printf("\n[*] ETHERNET CERCEVESI\n");
     printf("   |-Hedef MAC   : %.2X:%.2X:%.2X:%.2X:%.2X:%.2X\n", 
             eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], 
             eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
@@ -92,42 +94,61 @@ void PrintEthernetHeader(unsigned char *buffer) {
     printf("   |-Kaynak MAC  : %.2X:%.2X:%.2X:%.2X:%.2X:%.2X\n", 
             eth->h_source[0], eth->h_source[1], eth->h_source[2], 
             eth->h_source[3], eth->h_source[4], eth->h_source[5]);
-            
-    printf("   |-Protokol    : 0x%.4x\n", ntohs(eth->h_proto));
 }
 
 void PrintIpHeader(unsigned char *buffer) {
-    // POINTER ARİTMETİĞİ 
-    // buffer'ın başından (0. byte) tam olarak sizeof(struct ethhdr) yani 14 byte ileri atlıyoruz.
-    // Artık IP başlığının tam başladığı noktadayız.
     struct iphdr *ip = (struct iphdr *)(buffer + sizeof(struct ethhdr));
     
     struct sockaddr_in source, dest;
     memset(&source, 0, sizeof(source));
     source.sin_addr.s_addr = ip->saddr;
-    
     memset(&dest, 0, sizeof(dest));
     dest.sin_addr.s_addr = ip->daddr;
 
-    printf("\n" COLOR_CYAN "[*] IPv4 BASLIGI YAKALANDI" COLOR_RESET "\n");
+    // Dinamik IP Başlığı Uzunluğu (IHL)
+    // ihl (Internet Header Length) alanı 32-bit (4 byte) kelimeler cinsindendir.
+    // Bu yüzden gerçek byte uzunluğunu bulmak için 4 ile çarpıyoruz.
+    unsigned short iphdr_len = ip->ihl * 4;
+
+    printf(COLOR_CYAN "[*] IPv4 BASLIGI" COLOR_RESET "\n");
     printf("   |-Kaynak IP   : %s\n", inet_ntoa(source.sin_addr));
     printf("   |-Hedef IP    : %s\n", inet_ntoa(dest.sin_addr));
-    printf("   |-TTL (Yasam) : %d\n", (unsigned int)ip->ttl);
+    printf("   |-TTL         : %d\n", (unsigned int)ip->ttl);
     
-    // IP başlığındaki 'protocol' alanı, paketin içindeki verinin tipini söyler (Örn: 6 = TCP, 17 = UDP)
-    printf("   |-Protokol    : ");
+    // Taşıma Katmanına (L4) Yönlendirme
     switch (ip->protocol) {
-        case 1:  
-            printf(COLOR_YELLOW "ICMP" COLOR_RESET "\n"); 
+        case 6:  // TCP
+            PrintTcpPacket(buffer, iphdr_len);
             break;
-        case 6:  
-            printf(COLOR_GREEN "TCP" COLOR_RESET "\n"); 
+        case 17: // UDP
+            PrintUdpPacket(buffer, iphdr_len);
             break;
-        case 17: 
-            printf(COLOR_BLUE "UDP" COLOR_RESET "\n"); 
+        case 1:  // ICMP
+            printf(COLOR_YELLOW "[*] ICMP PAKETI YAKALANDI" COLOR_RESET "\n");
             break;
         default: 
-            printf("Diger (%d)\n", ip->protocol); 
+            printf("   |-Protokol    : Diger (%d)\n", ip->protocol); 
             break;
     }
+}
+
+// YENİ: TCP Başlığını Ayrıştırma
+void PrintTcpPacket(unsigned char *buffer, int iphdr_len) {
+    // DİNAMİK SIKRAMA: buffer + Ethernet(14) + IP Başlığı(Dinamik)
+    struct tcphdr *tcp = (struct tcphdr *)(buffer + sizeof(struct ethhdr) + iphdr_len);
+
+    printf(COLOR_GREEN "[*] TCP BASLIGI" COLOR_RESET "\n");
+    // Portlar ağ üzerinden geldiği için ntohs() ile çevrilmek zorundadır!
+    printf("   |-Kaynak Port : %u\n", ntohs(tcp->source));
+    printf("   |-Hedef Port  : %u\n", ntohs(tcp->dest));
+}
+
+// YENİ: UDP Başlığını Ayrıştırma
+void PrintUdpPacket(unsigned char *buffer, int iphdr_len) {
+    // DİNAMİK SIKRAMA: buffer + Ethernet(14) + IP Başlığı(Dinamik)
+    struct udphdr *udp = (struct udphdr *)(buffer + sizeof(struct ethhdr) + iphdr_len);
+
+    printf(COLOR_BLUE "[*] UDP BASLIGI" COLOR_RESET "\n");
+    printf("   |-Kaynak Port : %u\n", ntohs(udp->source));
+    printf("   |-Hedef Port  : %u\n", ntohs(udp->dest));
 }
