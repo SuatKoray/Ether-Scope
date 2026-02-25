@@ -6,16 +6,16 @@
 
 /* Ağ kütüphaneleri */
 #include <sys/socket.h>
-#include <arpa/inet.h>
-#include <net/ethernet.h>
+#include <arpa/inet.h>       // ntohs() fonksiyonu için
+#include <net/ethernet.h>    // ETH_P_ALL ve diğer Ethernet sabitleri için
 #include <linux/if_packet.h>
+#include <linux/if_ether.h>  // struct ethhdr (Ethernet Başlığı) için
 
 #define BUFFER_SIZE 65536
 
-/**
- * Ether-Scope: Düşük Seviyeli Paket Dinleyici
- * 1. AŞAMA: Soket Kurulumu ve Ham Veri Yakalama
- */
+/* --- FONKSİYON PROTOTİPLERİ --- */
+void ProcessPacket(unsigned char *buffer, ssize_t size);
+void PrintEthernetHeader(unsigned char *buffer);
 
 int main() {
     int raw_sock;
@@ -28,22 +28,17 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    // 1. ADIM: Raw Socket Oluşturma
-    // ETH_P_ALL: Tüm protokolleri (IPv4, IPv6, ARP vb.) Layer 2 seviyesinde yakalar.
     raw_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-
     if (raw_sock < 0) {
         perror("Soket Hatası");
-        fprintf(stderr, "NOT: Raw socket açmak için 'sudo' (root) yetkisi gereklidir.\n");
         free(buffer);
         return EXIT_FAILURE;
     }
 
-    printf("[INFO] Ether-Scope Aktif. Paketler dinleniyor...\n");
-    printf("----------------------------------------------\n");
+    printf("[INFO] Ether-Scope Aktif. L2 Paketleri Dinleniyor...\n");
+    printf("====================================================\n");
 
     while (1) {
-        // 2. ADIM: Ham veriyi yakalama
         ssize_t packet_size = recvfrom(raw_sock, buffer, BUFFER_SIZE, 0, 
                                        (struct sockaddr *)&saddr, &saddr_len);
 
@@ -52,13 +47,46 @@ int main() {
             break;
         }
 
-        // PROFESYONEL ÇIKTI: Şimdilik sadece boyut ve arayüz indeksi
-        printf("Paket Yakalandı! Boyut: %ld byte | Interface Index: %d\n", 
-                packet_size, saddr.sll_ifindex);
+        ProcessPacket(buffer, packet_size);
     }
 
-    // Temizlik
     close(raw_sock);
     free(buffer);
     return EXIT_SUCCESS;
+}
+
+/* --- FONKSİYON TANIMLAMALARI --- */
+
+/**
+ * Gelen her paketin ilk uğradığı santral fonksiyonudur.
+ */
+void ProcessPacket(unsigned char *buffer, ssize_t size) {
+    // Şimdilik sadece Ethernet başlığını ekrana basıyoruz
+    // İleride buraya "Eğer IPv4 ise IP'yi parse et" mantığını kuracağız.
+    PrintEthernetHeader(buffer);
+    printf("   |-Paket Boyutu: %ld byte\n", size);
+    printf("----------------------------------------------------\n");
+}
+
+/**
+ * Ham buffer'ı alır, Ethernet başlığına (14 byte) cast eder ve bilgileri basar.
+ */
+void PrintEthernetHeader(unsigned char *buffer) {
+    // Pointer Casting
+    // buffer'ın gösterdiği adresi, bir 'ethhdr' yapısı (template) olarak okuyoruz.
+    struct ethhdr *eth = (struct ethhdr *)buffer;
+
+    printf("\n[*] ETHERNET CERCEVESI YAKALANDI\n");
+    
+    // Hedef ve Kaynak MAC adreslerini %.2X (Hexadecimal, 2 hane, büyük harf) formatında basıyoruz.
+    printf("   |-Hedef MAC   : %.2X:%.2X:%.2X:%.2X:%.2X:%.2X\n", 
+            eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], 
+            eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
+            
+    printf("   |-Kaynak MAC  : %.2X:%.2X:%.2X:%.2X:%.2X:%.2X\n", 
+            eth->h_source[0], eth->h_source[1], eth->h_source[2], 
+            eth->h_source[3], eth->h_source[4], eth->h_source[5]);
+            
+    // Protokol tipini yazdırırken ntohs() kullanmak ZORUNLU.
+    printf("   |-Protokol    : 0x%.4x\n", ntohs(eth->h_proto));
 }
